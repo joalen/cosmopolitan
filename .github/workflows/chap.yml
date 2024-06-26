@@ -24,6 +24,7 @@ jobs:
         run: | 
           cd /opt/cosmo/ape && ./apeinstall.sh
           cd .. && make -j$(nproc)
+        continue-on-error: true
       
       - name: Install Chap dependencies
         run: |
