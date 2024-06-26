@@ -12,8 +12,14 @@ jobs:
         uses: actions/checkout@v2 
         with:
           ref: d9b4f647d88f194779c240cd59d86304bfd8c0f8
-          path: /opt/cosmo 
-          
+
+      - name: Create /opt/cosmo directory
+        run: mkdir -p /opt/cosmo
+
+      - name: Move repository files to /opt/cosmo
+        run: mv * /opt/cosmo
+        working-directory: /home/runner/work/cosmopolitan/cosmopolitan
+      
       - name: Build repository 
         run: | 
           cd /opt/cosmo/ape && ./apeinstall.sh
