@@ -1,0 +1,63 @@
+name: VMware Chap Runner
+
+on:
+  push:
+
+jobs:
+  run-vmwarechap:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v2 
+        with:
+          ref: d9b4f647d88f194779c240cd59d86304bfd8c0f8
+          path: /opt/cosmo 
+          
+      - name: Build repository 
+        run: | 
+          cd /opt/cosmo/ape && ./apeinstall.sh
+          cd .. && make -j$(nproc)
+      
+      - name: Install Chap dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake 
+
+      - name: Clone chap repository and build
+        run: |
+          git clone https://github.com/vmware/chap.git /tmp/chap
+          cd /tmp/chap
+          git submodule update --init --recursive
+          mkdir build-chap
+          cd build-chap
+          cmake ../
+          make
+      
+      - name: Run VMware Chap Analyzer
+        run: |
+          set +e
+
+          directory="/opt/cosmo"
+          ulimit -c unlimited
+
+          find "$directory" -name "*.so" -exec sh -c '
+              for so_file do
+                  "$so_file"
+              done
+          ' sh {} +
+
+          commands=("count" "describe" "dump" "enumerate" "explain" "list" "show" "summarize")
+          sub_commands=("allocations" "anchored" "anchorpoints" "externalanchored" "externalanchorpoints" "free" "inaccessible" "leaked" "readonly" "registeranchored" "registeranchorpoints" "rxonly" "stackanchorpoints")
+
+          for core_file in /var/lib/apport/coredump/*; do
+              if [ -f "$core_file" ]; then
+                  for command in "${commands[@]}"; do
+                      for sub_command in "${sub_commands[@]}"; do
+                          /tmp/chap/build-chap/chap "$core_file" <<EOF
+                          $command $sub_command
+          EOF
+                      done
+                  done
+              fi
+          done
