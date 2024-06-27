@@ -1,0 +1,100 @@
+name: Klee Runner
+
+on:
+  push:
+
+jobs:
+  run-klee:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v2 
+        with:
+          ref: d9b4f647d88f194779c240cd59d86304bfd8c0f8
+
+      - name: Create /opt/cosmo directory
+        run: mkdir -p /opt/cosmo
+
+      - name: Move repository files to /opt/cosmo
+        run: mv * /opt/cosmo
+        working-directory: /home/runner/work/cosmopolitan/cosmopolitan
+      
+      - name: Build repository 
+        run: | 
+          cd /opt/cosmo/ape && ./apeinstall.sh
+          cd .. && make -j$(nproc)
+        continue-on-error: true
+      
+      - name: Install Klee and STP dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake curl file g++-multilib gcc-multilib git libcap-dev libunwind-dev libgoogle-perftools-dev libncurses5-dev libsqlite3-dev libtcmalloc-minimal4 python3-pip unzip graphviz doxygen bison flex libboost-all-dev perl zlib1g-dev minisat
+          sudo pip3 install lit wllvm
+          sudo apt-get install -y clang-13 llvm-13 llvm-13-dev llvm-13-tools 
+
+      - name: Install STP (a dependency to Klee)
+        run: |
+          git clone https://github.com/stp/stp.git /tmp/stp
+          cd /tmp/stp && git checkout tags/2.3.3
+          mkdir build && cd build
+          cmake .. && make 
+          sudo make install
+          ulimit -s unlimited
+      
+      - name: Downloading Google Test Sources (a dependency to Klee)
+        run: |
+          mkdir -p /tmp/gtest && cd /tmp/gtest
+          curl -OL https://github.com/google/googletest/archive/release-1.11.0.zip && unzip release-1.11.0.zip
+      
+      - name: Build uClibc and the POSIX environment model
+        run: |
+          git clone https://github.com/klee/klee-uclibc.git /tmp/klee-uclibc
+          cd /tmp/klee-uclibc && ./configure --make-llvm-lib --with-cc clang-13 --with-llvm-config llvm-config-13
+          make -j2 
+          cd ..
+      
+      - name: Cloning and building libc++ (a dependency to Klee)
+        run: | 
+          git clone https://github.com/klee/klee.git /tmp/klee
+          sudo LLVM_VERSION=13 BASE=/usr/lib ENABLE_OPTIMIZED=1 DISABLE_ASSERTIONS=1 ENABLE_DEBUG=0 REQUIRES_RTTI=1 /tmp/klee/scripts/build/build.sh libcxx
+      
+      - name: Configuring and Building Klee
+        run: |
+          cd /tmp/klee
+          mkdir build && cd build 
+          cmake -DENABLE_SOLVER_STP=ON -DENABLE_POSIX_RUNTIME=ON -DKLEE_UCLIBC_PATH=/tmp/klee-uclibc -DENABLE_UNIT_TESTS=ON -DGTEST_SRC_DIR=/tmp/gtest/googletest-release-1.11.0 ..
+          make
+      
+      - name: Run Klee Analyzer
+        run: |
+          #!/bin/bash
+
+          set +e 
+          
+          include_dirs=$(find . -name '*.h' -exec dirname {} + | sort -u | sed 's/^/-I /')
+          
+          while IFS= read -r -d '' file; do
+              bc_file="${file%.c}.bc"
+              if clang -I "$include_dirs" -emit-llvm -c -g -O0 -Xclang -disable-O0-optnone "$file" -o "$bc_file" 2>/dev/null; then
+                  if ! /usr/lib/llvm-13/bin/llvm-nm "$PWD/$bc_file" | grep -q " T main"; then
+                      rm "$bc_file"
+                  else
+                      klee_output=$(/tmp/klee/build/bin/klee "$bc_file" 2>&1)
+                      klee_exit_code=$?
+          
+                      if [[ $klee_exit_code -eq 0 ]]; then
+                          /tmp/klee/build/bin/klee "$bc_file"
+                          echo ""
+                          echo ""
+                          echo ""
+                      elif [[ $klee_exit_code -eq 1 && $klee_output =~ "Invalid record" ]]; then
+                         	continue 
+                      else
+                          continue
+                      fi
+                  fi
+              else
+                  continue
+              fi
+          done < <(find . -name "*.c" -exec grep -q "int main" {} \; -print0)
